@@ -1,0 +1,23 @@
+{
+  "version": "2.0",
+  "logging": {
+      "logLevel": {
+         "default": "Information",
+         "System.Net.Http": "Error",
+         "System.Net.Http.HttpClient": "Error",
+         "Host.Controllers.Host": "Error",
+         "Function.http_trigger": "Information"
+      }, 
+      "applicationInsights": { 
+          "samplingSettings": { 
+              "isEnabled": true, 
+              "excludedTypes": "Request;Exception;Trace" 
+          }, 
+          "enableLiveMetricsFilters": true
+      }
+  },
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[4.*, 5.0.0)"
+  }
+}
