@@ -10,3 +10,4 @@ test
 CLAUDE.md 
 .claude/*
 __pycache__/*
+.mcp.json

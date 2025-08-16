@@ -18,112 +18,29 @@ from ask_sdk_core.utils import is_request_type, is_intent_name
 from ask_sdk_model.dialog import ElicitSlotDirective
 from ask_sdk_model import Intent, IntentConfirmationStatus, Slot, SlotConfirmationStatus
 
-# 共有モジュールからiot_agentとswitchbotをインポート
-from shared import iot_agent
-
-from langchain_openai import AzureChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+# 共有モジュールからiot_agent_langgraphをインポート
+from shared.iot_agent_langgraph import create_iot_agent
 
 # アプリケーションのログ設定
 # # 環境変数の読み込み
 
 
-# Initialize AzureChatOpenAI
-llm = AzureChatOpenAI(
-    api_version=os.getenv("AZURE_OPENAI_VERSION"),
-    azure_endpoint=os.getenv("AZURE_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_KEY"),
-    azure_deployment=os.getenv("DEPLOYMENT_NAME"),
-    temperature=0.1,
-    streaming=True,
-)
-
 # SwitchBot設定
 token = os.getenv("SW_TOKEN")
 secret = os.getenv("SW_SECRET")
-# # デバイス情報の初期化
-def initialize_device_ids():
-    try:
-        device_info = iot_agent.initialize_devices(token, secret)
-        return device_info
-    except Exception as e:
-        logging.error(f"デバイス初期化エラー: {str(e)}")
-        return {
-            'light_device_id': None,
-            'aircon_device_id': None,
-            'hub2_device_id': None
-        }
 
-# デバイスIDを初期化
-device_ids = initialize_device_ids()
-light_device_id = device_ids['light_device_id']
-aircon_device_id = device_ids['aircon_device_id'] 
-hub2_device_id = device_ids['hub2_device_id']
+# LLMプロバイダーの設定（環境変数で切り替え可能）
+llm_provider = os.getenv("LLM_PROVIDER", "azure_openai")  # デフォルトはAzure OpenAI
 
-# OpenAI APIツール定義を取得
-tools = iot_agent.get_tools()
-
-# システムメッセージを取得
-iot_system_message = iot_agent.get_system_message()
+# IoTエージェントを初期化
+iot_agent = create_iot_agent(token, secret, llm_provider)
 
 # 会話履歴の初期化
 conversation_history = {}
 
 def chat_with_agent(user_input, session_id):
     """エージェントとチャットして応答を取得する"""
-    # セッションの会話履歴を取得または初期化
-    if session_id not in conversation_history:
-        conversation_history[session_id] = [SystemMessage(content=iot_system_message)]
-    
-    messages = conversation_history[session_id]
-    
-    # ユーザー入力を追加
-    messages.append(HumanMessage(content=user_input))
-    
-    # AIからの応答を取得
-    response = llm.invoke(messages, tools=tools, tool_choice="auto")
-    
-    # 応答をメッセージ履歴に追加
-    messages.append(response)
-    
-    # ツール呼び出しがある場合は処理
-    if hasattr(response, 'tool_calls') and response.tool_calls:
-        try:
-            # iot_agentモジュールのprocess_tool_calls関数を使用
-            tool_messages = iot_agent.process_tool_calls(response.tool_calls, device_ids, token, secret)
-            
-            # ToolMessageを会話履歴に追加
-            messages.extend(tool_messages)
-            
-            # AIに実行結果を知らせる
-            final_response = llm.invoke(messages)
-            messages.append(final_response)
-            
-            result_content = final_response.content
-            logging.info(f"AI-Response: {result_content}")
-            return result_content
-        except ValueError as e:
-            error_message = f"ツール実行エラー: {str(e)}"
-            logging.error(error_message)
-            
-            # エラーメッセージをToolMessageとして追加
-            error_tool_message = ToolMessage(
-                content=json.dumps({"error": str(e)}),
-                tool_call_id=response.tool_calls[0].id if response.tool_calls else "error"
-            )
-            messages.append(error_tool_message)
-            
-            # AIにエラーを知らせる
-            error_response = llm.invoke(messages)
-            messages.append(error_response)
-            
-            result_content = error_response.content
-            logging.info(f"AI-Response (Error): {result_content}")
-            return result_content
-    else:
-        result_content = response.content
-        logging.info(f"AI-Response: {result_content}")
-        return result_content
+    return iot_agent.chat(user_input, session_id, conversation_history)
 
 # Alexa Skill Handler setup
 sb = SkillBuilder()

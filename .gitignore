@@ -290,5 +290,10 @@ Thumbs.db
 search.json
 
 #claude settings
-.claude/*
+.claude/
 CLAUDE.md
+
+#output
+outputs/
+
+.mcp.json
