@@ -17,7 +17,14 @@
       }
   },
   "extensionBundle": {
-    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "id": "Microsoft.Azure.Functions.ExtensionBundle.Preview",
     "version": "[4.*, 5.0.0)"
+  },
+  "extensions": {
+    "mcp": {
+      "instructions": "SwitchBot IoT device control tools. Use these tools to get device status and control lights, air conditioners, and other smart home devices.",
+      "serverName": "SwitchBotServer",
+      "serverVersion": "2.0.0"
+    }
   }
 }
