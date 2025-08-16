@@ -1,8 +1,7 @@
 import json
 import os
 import logging
-from dotenv import load_dotenv
-load_dotenv()
+
 
 import azure.functions as func
 
@@ -21,9 +20,11 @@ from ask_sdk_model import Intent, IntentConfirmationStatus, Slot, SlotConfirmati
 # 共有モジュールからiot_agent_langgraphをインポート
 from shared.iot_agent_langgraph import create_iot_agent
 
+
 # アプリケーションのログ設定
 # # 環境変数の読み込み
-
+from dotenv import load_dotenv
+load_dotenv()
 
 # SwitchBot設定
 token = os.getenv("SW_TOKEN")
