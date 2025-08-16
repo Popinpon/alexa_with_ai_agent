@@ -174,7 +174,7 @@ class SmartSpeakerAgent:
                 検索結果を含む辞書
             """
             try:
-                result = self.gemini_search_agent.chat(query, add_citations=True)
+                result = self.gemini_search_agent.chat(query)
                 
                 return {
                     "response": result.response,

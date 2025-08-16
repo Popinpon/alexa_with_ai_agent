@@ -4,6 +4,7 @@ GeminiのWeb検索（Grounding with Google Search）を利用したエージェ�
 import os
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
+from enum import Enum
 import logging
 from dotenv import load_dotenv
 
@@ -24,6 +25,13 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
     logger.warning("google-genai package not found. Please install: pip install google-genai")
+
+
+class CitationMode(Enum):
+    """引用の生成方式"""
+    NONE = "none"  # 引用なし
+    METADATA = "metadata"  # メタデータから引用を生成
+    SYSTEM_PROMPT = "system_prompt"  # システムプロンプトで引用を指示
 
 
 @dataclass
@@ -107,8 +115,8 @@ class GeminiSearchAgent:
             google_search=types.GoogleSearch()
         )
         
-        # 生成設定
-        self.config = types.GenerateContentConfig(
+        # 生成設定（基本設定）
+        self.base_config = types.GenerateContentConfig(
             tools=[self.grounding_tool]
         )
         
@@ -137,13 +145,13 @@ class GeminiSearchAgent:
         
         logger.info(f"GeminiSearchAgent initialized with model: {self.model}")
     
-    def chat(self, query: str, add_citations: bool = False, save_raw_response: bool = False, raw_response_path: str = "test_gemini_response.pkl") -> SearchResult:
+    def chat(self, query: str, citation_mode: CitationMode = CitationMode.SYSTEM_PROMPT, save_raw_response: bool = False, raw_response_path: str = "test_gemini_response.pkl") -> SearchResult:
         """
         会話履歴を保持しながらGemini APIのGoogle Search Groundingを使用してチャット
         
         Args:
             query: ユーザーの質問
-            add_citations: レスポンステキストに引用を追加するか
+            citation_mode: 引用の生成方式（NONE/METADATA/SYSTEM_PROMPT）
             save_raw_response: TrueならGemini APIの生responseをpickle保存
             raw_response_path: 保存ファイルパス
             
@@ -153,17 +161,30 @@ class GeminiSearchAgent:
         try:
             logger.info(f"Executing grounded chat: {query}")
             
+            # 引用方式に応じて設定を決定
+            if citation_mode == CitationMode.SYSTEM_PROMPT:
+                # 引用指示を含むシステムインストラクション
+                citation_instruction = """5. 引用情報は自然な日本語で組み込む
+6. urlなどはカタカナで表現できる場合はカタカナで表現する"""
+                
+                config = types.GenerateContentConfig(
+                    tools=[self.grounding_tool],
+                    system_instruction=citation_instruction
+                )
+            else:
+                config = self.base_config
+            
             # 会話履歴に新しいユーザーメッセージを追加
             self.conversation_history.append(types.Content(
                 role="user",
                 parts=[types.Part(text=query)]
             ))
             
-            # Gemini APIでGoogle Search Groundingを使用（会話履歴を含む）
+            # Gemini APIでGoogle Search Groundingを使用（動的config使用）
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=self.conversation_history,
-                config=self.config
+                config=config
             )
             # 生responseを保存
             if save_raw_response:
@@ -182,10 +203,15 @@ class GeminiSearchAgent:
                     grounding_metadata = self._extract_grounding_metadata(candidate.grounding_metadata)
                     print(grounding_metadata)
                     
-                    if add_citations:
+                    # 引用方式に応じた処理
+                    if citation_mode == CitationMode.METADATA:
                         response_text, citations = self._add_citations_to_text(
                             response_text, candidate.grounding_metadata
                         )
+                    elif citation_mode == CitationMode.SYSTEM_PROMPT:
+                        # システムプロンプト方式では、引用は既にレスポンステキストに自然に含まれている
+                        # スマートスピーカーでは音声読み上げなのでcitationリストは不要
+                        citations = []
             
             # アシスタントの回答を会話履歴に追加
             self.conversation_history.append(types.Content(
@@ -392,7 +418,7 @@ if __name__ == "__main__":
                 grounding_metadata = getattr(candidate, 'grounding_metadata', None) if candidate else None
                 response_text = getattr(response, 'text', "")
                 citations = []
-                # add_citations=Trueで引用挿入
+                # citation_mode=METADATAで引用挿入
                 if candidate and grounding_metadata:
                     citation_text, citations = agent._add_citations_to_text(response_text, grounding_metadata)
                 result = SearchResult(
@@ -406,7 +432,7 @@ if __name__ == "__main__":
                 agent.conversation_history.append(types.Content(role="model", parts=[types.Part(text=response_text)]))
             else:
                 # API実行
-                result = agent.chat(query, add_citations=False, save_raw_response=(i==0), raw_response_path=response_file)
+                result = agent.chat(query, citation_mode=CitationMode.NONE, save_raw_response=(i==0), raw_response_path=response_file)
 
             print(f"アシスタント: {result.response}")
             print(f"引用数: {len(result.citations)}")
