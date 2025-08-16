@@ -288,3 +288,7 @@ Thumbs.db
 
 # Project specific
 search.json
+
+#claude settings
+.claude/*
+CLAUDE.md

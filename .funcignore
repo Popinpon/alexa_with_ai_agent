@@ -8,3 +8,5 @@ test
 .venv
 .env
 CLAUDE.md 
+.claude/*
+__pycache__/*
