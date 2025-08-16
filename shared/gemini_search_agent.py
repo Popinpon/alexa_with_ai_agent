@@ -200,11 +200,11 @@ class GeminiSearchAgent:
                 grounding_metadata=grounding_metadata
             )
             
-            logger.info("Search completed successfully")
+            logger.info("Chat completed successfully")
             return result
             
         except Exception as e:
-            logger.error(f"Error during grounded search: {str(e)}")
+            logger.error(f"Error during grounded chat: {str(e)}")
             return SearchResult(
                 query=query,
                 response=f"検索エラーが発生しました: {str(e)}",
