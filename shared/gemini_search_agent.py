@@ -151,7 +151,7 @@ class GeminiSearchAgent:
             SearchResult: 回答結果オブジェクト
         """
         try:
-            logger.info(f"Executing grounded search: {query}")
+            logger.info(f"Executing grounded chat: {query}")
             
             # 会話履歴に新しいユーザーメッセージを追加
             self.conversation_history.append(types.Content(
@@ -233,7 +233,6 @@ class GeminiSearchAgent:
                         result["web_results"].append({
                             "title": getattr(chunk.web, 'title', ''),
                             "uri": getattr(chunk.web, 'uri', ''),
-                            "summary": getattr(chunk.web, 'summary', '')
                         })
             
             return result
@@ -352,7 +351,6 @@ class GeminiSearchAgent:
                 parts=[types.Part(text="承知しました。スマートスピーカー向けに簡潔で聞き取りやすい回答を提供します。")]
             )
         ]
-        logger.info("Conversation history cleared (system prompt retained)")
     
     def get_conversation_length(self) -> int:
         """会話履歴の長さを取得"""
