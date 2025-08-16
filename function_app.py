@@ -6,26 +6,11 @@ load_dotenv()
 
 import azure.functions as func
 
-# # ログフォーマットを設定
-# formatter = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
-
-# # ハンドラーを設定
-# handler = logging.StreamHandler()
-# handler.setFormatter(formatter)
-
-# # ルートロガーにハンドラーを追加
-# root_logger = logging.getLogger()
-# root_logger.addHandler(handler)
-
+# Blueprintをインポート
+from mcp_switchbot_tools import bp as switchbot_bp
 
 # Azure Functions のワーカープロセスのログレベルを設定
 logging.getLogger("httpx").setLevel(logging.WARNING)
-# logging.getLogger("azure.functions").setLevel(logging.DEBUG)
-# logging.getLogger("azure.functions.worker").setLevel(logging.DEBUG)
-# logging.getLogger("azure.functions.http").setLevel(logging.DEBUG)
-# logging.getLogger("azure.functions.worker.middleware").setLevel(logging.DEBUG)
-# logging.getLogger("Host.Controllers.Host").setLevel(logging.DEBUG)
-# logging.getLogger("System.Net.Http").setLevel(logging.DEBUG)
 
 from ask_sdk_core.skill_builder import SkillBuilder
 from ask_sdk_core.dispatch_components import AbstractRequestHandler
@@ -35,7 +20,6 @@ from ask_sdk_model import Intent, IntentConfirmationStatus, Slot, SlotConfirmati
 
 # 共有モジュールからiot_agentとswitchbotをインポート
 from shared import iot_agent
-# from shared.switchbot import get_device_list, get_device_status
 
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -249,6 +233,9 @@ sb.add_request_handler(SessionEndedRequestHandler())
 
 # # Azure Function App setup
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
+
+# ブループリントを登録
+app.register_blueprint(switchbot_bp)
 
 @app.route(route="http_trigger")
 def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
