@@ -13,7 +13,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from gemini_agent import GeminiAgent
+from shared.gemini_agent import GeminiAgent
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
