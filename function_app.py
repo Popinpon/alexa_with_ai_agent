@@ -1,7 +1,7 @@
 import json
 import os
 import logging
-
+import asyncio
 
 import azure.functions as func
 
@@ -39,9 +39,9 @@ smart_speaker_agent = create_smart_speaker_agent(llm_provider)
 # 会話履歴の初期化
 conversation_history = {}
 
-def chat_with_agent(user_input, session_id):
+async def chat_with_agent(user_input, session_id):
     """スマートスピーカーエージェントとチャットして応答を取得する"""
-    return smart_speaker_agent.chat(user_input, session_id, conversation_history)
+    return await smart_speaker_agent.chat(user_input, session_id, conversation_history)
 
 # Alexa Skill Handler setup
 sb = SkillBuilder()
@@ -90,7 +90,8 @@ class QuestionIntentHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak("何か質問はありませんか？").response
         input_text = input_text.replace(" ", "")
         # スマートスピーカーエージェントに問い合わせ
-        response_text = chat_with_agent(input_text, session_id)
+        loop = asyncio.get_event_loop()
+        response_text = loop.run_until_complete(chat_with_agent(input_text, session_id))
         
         # return handler_input.response_builder.speak(response_text).response
         return (
@@ -113,7 +114,8 @@ class FallbackIntentHandler(AbstractRequestHandler):
             logging.info(f"AI-Response: {speech_text}")
             return handler_input.response_builder.speak(speech_text).response
         input_text = input_text.replace(" ", "")
-        response_text = chat_with_agent(input_text, session_id)
+        loop = asyncio.get_event_loop()
+        response_text = loop.run_until_complete(chat_with_agent(input_text, session_id))
         return (
             handler_input.response_builder.speak(response_text)
             .add_directive(directive)
