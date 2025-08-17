@@ -2,7 +2,8 @@ import json
 import logging
 import os
 import asyncio
-from typing import Dict, List, Any, Optional, TypedDict, Annotated
+import time
+from typing import Dict, List, Any, TypedDict, Annotated
 from enum import Enum
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
@@ -12,15 +13,17 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from .gemini_search_agent import GeminiSearchAgent
+from gemini_agent import GeminiAgent
 
-try:
-    from langchain_mcp_adapters.client import MultiServerMCPClient
-    MCP_AVAILABLE = True
-except ImportError:
-    MCP_AVAILABLE = False
-    logging.warning("langchain-mcp not available. Falling back to direct switchbot integration.")
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
+# ログ設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 class LLMProvider(Enum):
     AZURE_OPENAI = "azure_openai"
@@ -37,27 +40,40 @@ class SmartSpeakerAgent:
     def __init__(self, llm_provider: str = "azure_openai"):
         self.llm_provider = llm_provider
         self.mcp_client = None
-        self.device_ids = self._initialize_devices()
         self.llm = self._create_llm()
-        self.gemini_search_agent = GeminiSearchAgent()
-        self.tools = asyncio.run(self._create_tools())
-        self.graph = self._create_graph()
+        self.gemini_search_agent = GeminiAgent()
+        self.tools = []  # 遅延初期化
+        self.device_ids = {}  # 遅延初期化
+        self.graph = None  # 遅延初期化
+        self._initialized = False
+        
+        # デバイス情報キャッシュ
+        self._device_cache = None
+        self._device_cache_timestamp = None
+        self._cache_ttl = 300  # 5分間有効
+    
+    async def _ensure_initialized(self):
+        """必要に応じて非同期初期化を実行"""
+        if not self._initialized:
+            self.tools = await self._create_tools()
+            self.device_ids = self._get_default_devices()  # デフォルトデバイスを使用
+            self.graph = self._create_graph()
+            self._initialized = True
     
     async def _initialize_mcp_client(self):
         """MCPクライアントを初期化（記事に従った実装）"""
-        if not MCP_AVAILABLE:
-            return None
+        if self.mcp_client:
+            return self.mcp_client
             
         try:
             # ユーザー認証情報は現在使用しない
             
             # SwitchBot MCP サーバーの設定（.mcp.jsonから取得）
-            import os
             mcp_extension_key = os.getenv("MCP_EXTENSION_KEY")
             
             client = MultiServerMCPClient({
                 "switchbot": {
-                    "type": "sse",
+                    "transport": "sse",
                     "url": "https://oai-alexa.azurewebsites.net/runtime/webhooks/mcp/sse",
                     "headers": {
                         "x-functions-key": mcp_extension_key
@@ -65,21 +81,81 @@ class SmartSpeakerAgent:
                 }
             })
             
-            logging.info("SwitchBot MCPクライアントを初期化しました")
+            logger.info("SwitchBot MCPクライアントを初期化しました")
             return client
             
         except Exception as e:
-            logging.error(f"MCP client initialization failed: {e}")
+            logger.error(f"MCP client initialization failed: {e}")
             return None
     
-    def _initialize_devices(self) -> Dict[str, str]:
-        """SwitchBot MCPツールからデバイス情報を動的に取得"""
+    def _is_cache_valid(self) -> bool:
+        """キャッシュが有効かどうかを確認"""
+        if self._device_cache is None or self._device_cache_timestamp is None:
+            return False
+        
+        current_time = time.time()
+        return (current_time - self._device_cache_timestamp) < self._cache_ttl
+    
+    async def _get_switchbot_devices_via_mcp(self) -> Dict[str, Any]:
+        """MCPを使用してSwitchBotデバイス情報を取得（キャッシュ機能付き）"""
+        # キャッシュが有効な場合はキャッシュから返す
+        if self._is_cache_valid():
+            logger.info("📋 Using cached device information")
+            return self._device_cache
+        
         try:
-            # SwitchBotデバイス一覧を取得
-            devices_info = self._get_switchbot_devices()
+            cache_start = time.time()
+            if self.mcp_client:
+                # MCPクライアントからツールを取得
+                tools = await self.mcp_client.get_tools()
+                # get_switchbot_devicesツールを探す
+                for tool in tools:
+                    if tool.name == "get_switchbot_devices":
+                        result = await tool.ainvoke({})
+                        
+                        # 結果が文字列の場合はJSONとして解析
+                        if isinstance(result, str):
+                            try:
+                                parsed_result = json.loads(result)
+                                if 'body' in parsed_result:
+                                    result = parsed_result['body']
+                                else:
+                                    result = parsed_result
+                            except json.JSONDecodeError:
+                                logger.error(f"JSON解析エラー: {result}")
+                                return {}
+                        
+                        # キャッシュに保存
+                        if result:
+                            self._device_cache = result
+                            self._device_cache_timestamp = time.time()
+                            cache_time = time.time() - cache_start
+                            logger.info(f"💾 Device info cached in {cache_time:.2f}s")
+                        
+                        return result if result else {}
+                logger.warning("SwitchBotデバイス取得ツールが見つかりません")
+                return {}
+            else:
+                logger.warning("MCPクライアントが利用できません")
+                return {}
+        except Exception as e:
+            logger.error(f"MCPでのデバイス取得エラー: {e}")
+            return {}
+    
+    def invalidate_device_cache(self):
+        """デバイス情報キャッシュを無効化（手動リフレッシュ用）"""
+        self._device_cache = None
+        self._device_cache_timestamp = None
+        logger.info("🗑️ Device cache invalidated")
+    
+    async def get_actual_device_ids(self) -> Dict[str, str]:
+        """実際のデバイス情報を取得（IoT操作時に使用）"""
+        try:
+            # SwitchBotデバイス一覧を取得（キャッシュ機能付き）
+            devices_info = await self._get_switchbot_devices_via_mcp()
             
             if not devices_info:
-                logging.warning("SwitchBotデバイスが取得できませんでした。デフォルト設定を使用します。")
+                logger.warning("SwitchBotデバイスが取得できませんでした。デフォルト設定を使用します。")
                 return self._get_default_devices()
             
             device_mapping = {}
@@ -97,11 +173,11 @@ class SmartSpeakerAgent:
             for device in devices_info.get('deviceList', []):
                 if device.get('deviceType') == 'Hub 2':
                     hub2_device_id = device['deviceId']
-                    logging.info(f"SmartSpeaker-Agent: Hub 2デバイスを検出: {device.get('deviceName', 'Unknown')} (ID: {hub2_device_id})")
+                    logger.info(f"SmartSpeaker-Agent: Hub 2デバイスを検出: {device.get('deviceName', 'Unknown')} (ID: {hub2_device_id})")
                     break
             
             if not hub2_device_id:
-                logging.warning("警告: Hub 2デバイスが見つかりません。室内環境情報の取得ができません。")
+                logger.warning("警告: Hub 2デバイスが見つかりません。室内環境情報の取得ができません。")
             
             device_mapping = {
                 'light_device_id': light_device_id,
@@ -109,12 +185,13 @@ class SmartSpeakerAgent:
                 'hub2_device_id': hub2_device_id
             }
             
-            logging.info(f"SwitchBotデバイスマッピング: {device_mapping}")
+            logger.info(f"SwitchBotデバイスマッピング: {device_mapping}")
             return device_mapping if device_mapping else self._get_default_devices()
             
         except Exception as e:
-            logging.error(f"デバイス情報の取得に失敗: {e}")
+            logger.error(f"デバイス情報の取得に失敗: {e}")
             return self._get_default_devices()
+    
 
     
     def _get_default_devices(self) -> Dict[str, str]:
@@ -150,17 +227,18 @@ class SmartSpeakerAgent:
         
         # MCPクライアントの初期化
         self.mcp_client = await self._initialize_mcp_client()
+        logger.info(f"MCPクライアント初期化結果: {self.mcp_client is not None}")
         
-        if self.mcp_client and MCP_AVAILABLE:
+        if self.mcp_client:
             try:
                 # MCPクライアントからツールを取得
                 mcp_tools = await self.mcp_client.get_tools()
-                logging.info(f"SwitchBot MCPツールを取得: {len(mcp_tools)}個")
+                logger.info(f"SwitchBot MCPツールを取得: {len(mcp_tools)}個")
                 tools.extend(mcp_tools)
             except Exception as e:
-                logging.error(f"MCPツールの取得に失敗: {e}")
+                logger.error(f"MCPツールの取得に失敗: {e}")
         else:
-            logging.warning("MCPツールが利用できません")
+            logger.warning("MCPツールが利用できません")
         
         # Gemini検索ツールを追加
         @tool
@@ -168,7 +246,7 @@ class SmartSpeakerAgent:
             """Geminiの検索機能を使用してWeb検索を実行します
             
             Args:
-                query: 検索クエリ（質問や調べたいこと）
+                query: 背景と検索クエリ（質問や調べたいこと）背景を含めると検索精度も向上
             
             Returns:
                 検索結果を含む辞書
@@ -183,7 +261,7 @@ class SmartSpeakerAgent:
                     "success": True
                 }
             except Exception as e:
-                logging.error(f"Gemini検索エラー: {e}")
+                logger.error(f"Gemini検索エラー: {e}")
                 return {
                     "response": f"検索中にエラーが発生しました: {str(e)}",
                     "citations": [],
@@ -192,22 +270,22 @@ class SmartSpeakerAgent:
                 }
         
         tools.append(gemini_search)
-        logging.info(f"全ツール数: {len(tools)}個（SwitchBot + Gemini検索）")
+        logger.info(f"全ツール数: {len(tools)}個（SwitchBot + Gemini検索）")
         return tools
     
     def _create_graph(self):
         """LangGraphのグラフを作成（MCPツールのみ使用）"""
-        def agent_node(state: AgentState):
+        async def agent_node(state: AgentState):
             """エージェントノード - LLMがメッセージを処理"""
             messages = state["messages"]
             
             llm_with_tools = self.llm.bind_tools(self.tools)
-            response = llm_with_tools.invoke(messages)
+            response = await llm_with_tools.ainvoke(messages)
             
             return {"messages": [response]}
         
-        async def mcp_tools_node(state: AgentState):
-            """MCP ツールノード - 記事に従った実装"""
+        async def tools_node(state: AgentState):
+            """統合ツールノード - 全てのツール（MCP + Gemini）を処理"""
             messages = state["messages"]
             last_message = messages[-1]
             
@@ -215,18 +293,22 @@ class SmartSpeakerAgent:
                 return state
             
             try:
-                if self.mcp_client and MCP_AVAILABLE:
-                    # MCPツールを使用してツール呼び出しを実行
-                    mcp_tools = await self.mcp_client.get_tools()
-                    tool_node = ToolNode(mcp_tools)
-                    result = tool_node.invoke(state)
-                    return result
-                else:
-                    logging.error("MCPツールが利用できません")
-                    return state
+                # ツール実行時間を計測
+                tool_start = time.time()
+                tool_calls = last_message.tool_calls
+                logger.info(f"🔧 Tool calls: {[call['name'] for call in tool_calls]}")
+                
+                # 統一化されたツールセット（self.tools）を使用
+                tool_node = ToolNode(self.tools)
+                result = await tool_node.ainvoke(state)
+                
+                tool_time = time.time() - tool_start
+                logger.info(f"⏱️ Tool execution time: {tool_time:.2f}s")
+                return result
                     
             except Exception as e:
-                logging.error(f"MCP tools node error: {e}")
+                tool_time = time.time() - tool_start if 'tool_start' in locals() else 0
+                logger.error(f"Tools node error after {tool_time:.2f}s: {e}")
                 return state
         
         def should_continue(state: AgentState):
@@ -235,7 +317,7 @@ class SmartSpeakerAgent:
             last_message = messages[-1]
             
             if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                return "mcp_tools"
+                return "tools"
             return END
         
         # グラフを構築
@@ -243,12 +325,12 @@ class SmartSpeakerAgent:
         
         # ノードを追加
         workflow.add_node("agent", agent_node)
-        workflow.add_node("mcp_tools", mcp_tools_node)
+        workflow.add_node("tools", tools_node)
         
         # エッジを追加
         workflow.add_edge(START, "agent")
-        workflow.add_conditional_edges("agent", should_continue, ["mcp_tools", END])
-        workflow.add_edge("mcp_tools", "agent")
+        workflow.add_conditional_edges("agent", should_continue, ["tools", END])
+        workflow.add_edge("tools", "agent")
         
         return workflow.compile()
     
@@ -267,36 +349,46 @@ class SmartSpeakerAgent:
 - 専門用語は避け、分かりやすい表現を使用
 - 回答は2-3文程度に収める
 - 数字や時間は明確に読み上げる
+例：
 - 「電気をつけて」→照明を点灯
 - 「暑い/寒い」→適切な温度設定でエアコンを操作
 - 「今の部屋の温度は？」→環境情報を取得
-- 「〜について教えて」→Web検索で最新情報を提供
+- 「〜について教えて」→Web検索で最新情報を提供。自身の情報にない場合は必ず検索すること
 
 すべての応答は音声での読み上げに適した自然な日本語で行ってください。
 """
     
-    def chat(self, user_input: str, session_id: str, conversation_history: Dict[str, List] = None) -> str:
+    async def chat(self, user_input: str, session_id: str, conversation_history: Dict[str, List] = None) -> str:
         """ユーザー入力を処理して応答を返す"""
-        if conversation_history is None:
-            conversation_history = {}
-        
-        # セッションの会話履歴を取得または初期化
-        if session_id not in conversation_history:
-            conversation_history[session_id] = [SystemMessage(content=self.get_system_message())]
-        
-        messages = conversation_history[session_id].copy()
-        messages.append(HumanMessage(content=user_input))
-        
-        # 初期状態を設定
-        state = AgentState(
-            messages=messages,
-            device_ids=self.device_ids,
-            llm_provider=self.llm_provider
-        )
+        start_time = time.time()
         
         try:
-            # グラフを実行
-            result = self.graph.invoke(state)
+            # 初期化を確実に実行
+            init_start = time.time()
+            await self._ensure_initialized()
+            init_time = time.time() - init_start
+            
+            if conversation_history is None:
+                conversation_history = {}
+            
+            # セッションの会話履歴を取得または初期化
+            if session_id not in conversation_history:
+                conversation_history[session_id] = [SystemMessage(content=self.get_system_message())]
+            
+            messages = conversation_history[session_id].copy()
+            messages.append(HumanMessage(content=user_input))
+            
+            # 初期状態を設定
+            state = AgentState(
+                messages=messages,
+                device_ids=self.device_ids,
+                llm_provider=self.llm_provider
+            )
+            
+            # グラフを非同期実行
+            graph_start = time.time()
+            result = await self.graph.ainvoke(state)
+            graph_time = time.time() - graph_start
             
             # 会話履歴を更新
             conversation_history[session_id] = result["messages"]
@@ -305,17 +397,51 @@ class SmartSpeakerAgent:
             last_message = result["messages"][-1]
             if isinstance(last_message, AIMessage):
                 response_content = last_message.content
-                logging.info(f"SmartSpeaker-Response: {response_content}")
+                
+                # 実行時間のログ出力
+                total_time = time.time() - start_time
+                logger.info(f"⏱️ Performance Metrics - Total: {total_time:.2f}s | Init: {init_time:.2f}s | Graph: {graph_time:.2f}s")
+                logger.info(f"SmartSpeaker-Response: {response_content}")
                 return response_content
             else:
+                total_time = time.time() - start_time
+                logger.warning(f"⏱️ Performance Metrics - Total: {total_time:.2f}s (Failed)")
                 return "申し訳ありません。応答の生成に失敗しました。"
                 
         except Exception as e:
+            total_time = time.time() - start_time
             error_message = f"エラーが発生しました: {str(e)}"
-            logging.error(error_message)
+            logger.error(f"⏱️ Performance Metrics - Total: {total_time:.2f}s (Error)")
+            logger.error(error_message)
             return "申し訳ありません。処理中にエラーが発生しました。"
 
 
 def create_smart_speaker_agent(llm_provider: str = "azure_openai") -> SmartSpeakerAgent:
     """スマートスピーカーエージェントを作成する工場関数"""
     return SmartSpeakerAgent(llm_provider)
+
+
+# 使用例とテスト
+async def main():
+    """非同期メイン関数"""
+    try:
+        agent = SmartSpeakerAgent("azure_openai")
+        
+        # テストクエリ
+        queries = [
+            "エアコン消して",
+        ]
+        
+        session_id = "test_session"
+        
+        for query in queries:
+            print(f"\n=== 質問: {query} ===")
+            response = await agent.chat(query, session_id)
+            print(f"回答: {response}")
+            
+    except Exception as e:
+        print(f"テスト実行エラー: {str(e)}")
+        print("環境変数が設定されているか確認してください")
+
+if __name__ == "__main__":
+    asyncio.run(main())
