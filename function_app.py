@@ -1,7 +1,7 @@
 import json
 import os
 import logging
-
+import asyncio
 
 import azure.functions as func
 
@@ -17,8 +17,8 @@ from ask_sdk_core.utils import is_request_type, is_intent_name
 from ask_sdk_model.dialog import ElicitSlotDirective
 from ask_sdk_model import Intent, IntentConfirmationStatus, Slot, SlotConfirmationStatus
 
-# 共有モジュールからiot_agent_langgraphをインポート
-from shared.iot_agent_langgraph import create_iot_agent
+# 共有モジュールからsmart_speaker_agentをインポート
+from shared.smart_speaker_agent import create_smart_speaker_agent
 
 
 # アプリケーションのログ設定
@@ -33,15 +33,15 @@ secret = os.getenv("SW_SECRET")
 # LLMプロバイダーの設定（環境変数で切り替え可能）
 llm_provider = os.getenv("LLM_PROVIDER", "azure_openai")  # デフォルトはAzure OpenAI
 
-# IoTエージェントを初期化
-iot_agent = create_iot_agent(token, secret, llm_provider)
+# スマートスピーカーエージェントを初期化
+smart_speaker_agent = create_smart_speaker_agent(llm_provider)
 
 # 会話履歴の初期化
 conversation_history = {}
 
-def chat_with_agent(user_input, session_id):
-    """エージェントとチャットして応答を取得する"""
-    return iot_agent.chat(user_input, session_id, conversation_history)
+async def chat_with_agent(user_input, session_id):
+    """スマートスピーカーエージェントとチャットして応答を取得する"""
+    return await smart_speaker_agent.chat(user_input, session_id, conversation_history)
 
 # Alexa Skill Handler setup
 sb = SkillBuilder()
@@ -89,8 +89,8 @@ class QuestionIntentHandler(AbstractRequestHandler):
         if(not input_text):
             return handler_input.response_builder.speak("何か質問はありませんか？").response
         input_text = input_text.replace(" ", "")
-        # IoTエージェントに問い合わせ
-        response_text = chat_with_agent(input_text, session_id)
+        # スマートスピーカーエージェントに問い合わせ
+        response_text = asyncio.run(chat_with_agent(input_text, session_id))
         
         # return handler_input.response_builder.speak(response_text).response
         return (
@@ -113,7 +113,7 @@ class FallbackIntentHandler(AbstractRequestHandler):
             logging.info(f"AI-Response: {speech_text}")
             return handler_input.response_builder.speak(speech_text).response
         input_text = input_text.replace(" ", "")
-        response_text = chat_with_agent(input_text, session_id)
+        response_text = asyncio.run(chat_with_agent(input_text, session_id))
         return (
             handler_input.response_builder.speak(response_text)
             .add_directive(directive)
