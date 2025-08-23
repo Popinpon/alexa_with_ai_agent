@@ -38,14 +38,31 @@ class AgentState(TypedDict):
 
 class SmartSpeakerAgent:
     def __init__(self, llm_provider: str = "azure_openai"):
+        init_start = time.time()
+        logger.info(f"🚀 SmartSpeakerAgent initialization started")
+        
         self.llm_provider = llm_provider
         self.mcp_client = None
+        
+        # LLM作成時間計測
+        llm_start = time.time()
         self.llm = self._create_llm()
+        llm_time = time.time() - llm_start
+        logger.info(f"⏱️ LLM creation: {llm_time:.3f}s")
+        
+        # GeminiAgent作成時間計測
+        gemini_start = time.time()
         self.gemini_search_agent = GeminiAgent()
+        gemini_time = time.time() - gemini_start
+        logger.info(f"⏱️ GeminiAgent creation: {gemini_time:.3f}s")
+        
         self.tools = []  # 遅延初期化
         self.device_ids = {}  # 遅延初期化
         self.graph = None  # 遅延初期化
         self._initialized = False
+        
+        init_total = time.time() - init_start
+        logger.info(f"✅ SmartSpeakerAgent initialization completed: {init_total:.3f}s")
         
         # デバイス情報キャッシュ
         self._device_cache = None
@@ -55,10 +72,31 @@ class SmartSpeakerAgent:
     async def _ensure_initialized(self):
         """必要に応じて非同期初期化を実行"""
         if not self._initialized:
+            async_init_start = time.time()
+            logger.info(f"🔄 Async initialization started")
+            
+            # ツール作成時間計測
+            tools_start = time.time()
             self.tools = await self._create_tools()
+            tools_time = time.time() - tools_start
+            logger.info(f"⏱️ Tools creation: {tools_time:.3f}s")
+            
+            # デバイスID取得時間計測
+            devices_start = time.time()
             self.device_ids = self._get_default_devices()  # デフォルトデバイスを使用
+            devices_time = time.time() - devices_start
+            logger.info(f"⏱️ Device IDs setup: {devices_time:.3f}s")
+            
+            # グラフ作成時間計測
+            graph_start = time.time()
             self.graph = self._create_graph()
+            graph_time = time.time() - graph_start
+            logger.info(f"⏱️ Graph creation: {graph_time:.3f}s")
+            
             self._initialized = True
+            
+            async_init_total = time.time() - async_init_start
+            logger.info(f"✅ Async initialization completed: {async_init_total:.3f}s")
     
     async def _initialize_mcp_client(self):
         """MCPクライアントを初期化（記事に従った実装）"""
@@ -66,6 +104,9 @@ class SmartSpeakerAgent:
             return self.mcp_client
             
         try:
+            mcp_start = time.time()
+            logger.info(f"🔌 MCP client initialization started")
+            
             # ユーザー認証情報は現在使用しない
             
             # SwitchBot MCP サーバーの設定（.mcp.jsonから取得）
@@ -81,11 +122,13 @@ class SmartSpeakerAgent:
                 }
             })
             
-            logger.info("SwitchBot MCPクライアントを初期化しました")
+            mcp_time = time.time() - mcp_start
+            logger.info(f"✅ SwitchBot MCPクライアント初期化完了: {mcp_time:.3f}s")
             return client
             
         except Exception as e:
-            logger.error(f"MCP client initialization failed: {e}")
+            mcp_time = time.time() - mcp_start if 'mcp_start' in locals() else 0
+            logger.error(f"❌ MCP client initialization failed after {mcp_time:.3f}s: {e}")
             return None
     
     def _is_cache_valid(self) -> bool:
