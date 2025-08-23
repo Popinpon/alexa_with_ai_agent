@@ -67,7 +67,7 @@ class LaunchRequestHandler(AbstractRequestHandler):
 
     def handle(self, handler_input):
         session_id = handler_input.request_envelope.session.session_id
-        speech_text = "ホームエージェントを起動しました。何をお手伝いしましょうか？"
+        speech_text = "起動しました。何をお手伝いしましょうか？"
         logging.info(f"AI-Response: {speech_text}")
         # return handler_input.response_builder.speak(speech_text).response
         return (
