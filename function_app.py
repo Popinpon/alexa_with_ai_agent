@@ -179,7 +179,7 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @app.route(route="warmup")
-def warmup(_: func.HttpRequest) -> func.HttpResponse:
+def warmup(req: func.HttpRequest) -> func.HttpResponse:
     """
     コールドスタート対策用のウォームアップ関数
     定期的に呼び出すことでFunction Appのインスタンスを温かく保つ
