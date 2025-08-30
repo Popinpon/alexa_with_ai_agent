@@ -1,0 +1,21 @@
+# Core dependencies
+azure-functions==1.22.1
+ask-sdk-core==1.19.0
+ask-sdk-model==1.82.0
+
+# AI/ML packages
+langchain==0.3.27
+langchain-google-genai==2.1.9
+langchain-openai==0.3.12
+langgraph==0.2.64
+google-generativeai
+openai==1.70.0
+
+# MCP
+mcp==1.13.0
+langchain-mcp-adapters==0.1.9
+
+# Utilities
+python-dotenv==1.1.0
+pydantic==2.11.2
+requests==2.32.3
