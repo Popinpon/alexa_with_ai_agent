@@ -43,7 +43,10 @@ class SmartSpeakerAgent:
         
         self.llm_provider = llm_provider
         self.mcp_client = None
-        
+                # デバイス情報キャッシュ
+        self._device_cache = None
+        self._device_cache_timestamp = None
+        self._cache_ttl = 300  # 5分間有効
         # LLM作成時間計測
         llm_start = time.time()
         self.llm = self._create_llm()
@@ -56,47 +59,18 @@ class SmartSpeakerAgent:
         gemini_time = time.time() - gemini_start
         logger.info(f"⏱️ GeminiAgent creation: {gemini_time:.3f}s")
         
-        self.tools = []  # 遅延初期化
-        self.device_ids = {}  # 遅延初期化
-        self.graph = None  # 遅延初期化
-        self._initialized = False
+        # 非同期初期化を同期的に実行
+        logger.info(f"🔄 Starting async initialization during __init__")
+        self.tools = asyncio.run(self._create_tools())
+        self.device_ids = asyncio.run(self.get_actual_device_ids())
+        self.graph = self._create_graph()
+        self._initialized = True
         
         init_total = time.time() - init_start
         logger.info(f"✅ SmartSpeakerAgent initialization completed: {init_total:.3f}s")
         
-        # デバイス情報キャッシュ
-        self._device_cache = None
-        self._device_cache_timestamp = None
-        self._cache_ttl = 300  # 5分間有効
+
     
-    async def _ensure_initialized(self):
-        """必要に応じて非同期初期化を実行"""
-        if not self._initialized:
-            async_init_start = time.time()
-            logger.info(f"🔄 Async initialization started")
-            
-            # ツール作成時間計測
-            tools_start = time.time()
-            self.tools = await self._create_tools()
-            tools_time = time.time() - tools_start
-            logger.info(f"⏱️ Tools creation: {tools_time:.3f}s")
-            
-            # デバイスID取得時間計測
-            devices_start = time.time()
-            self.device_ids = self._get_default_devices()  # デフォルトデバイスを使用
-            devices_time = time.time() - devices_start
-            logger.info(f"⏱️ Device IDs setup: {devices_time:.3f}s")
-            
-            # グラフ作成時間計測
-            graph_start = time.time()
-            self.graph = self._create_graph()
-            graph_time = time.time() - graph_start
-            logger.info(f"⏱️ Graph creation: {graph_time:.3f}s")
-            
-            self._initialized = True
-            
-            async_init_total = time.time() - async_init_start
-            logger.info(f"✅ Async initialization completed: {async_init_total:.3f}s")
     
     async def _initialize_mcp_client(self):
         """MCPクライアントを初期化（記事に従った実装）"""
@@ -147,7 +121,6 @@ class SmartSpeakerAgent:
             return self._device_cache
         
         try:
-            cache_start = time.time()
             if self.mcp_client:
                 # MCPクライアントからツールを取得
                 tools = await self.mcp_client.get_tools()
@@ -157,84 +130,65 @@ class SmartSpeakerAgent:
                         result = await tool.ainvoke({})
                         
                         # 結果が文字列の場合はJSONとして解析
-                        if isinstance(result, str):
-                            try:
-                                parsed_result = json.loads(result)
-                                if 'body' in parsed_result:
-                                    result = parsed_result['body']
-                                else:
-                                    result = parsed_result
-                            except json.JSONDecodeError:
-                                logger.error(f"JSON解析エラー: {result}")
-                                return {}
+                        parsed_result = json.loads(result)
+                        if 'body' in parsed_result:
+                            result = parsed_result['body']
+                        else:
+                            result = parsed_result
                         
                         # キャッシュに保存
                         if result:
                             self._device_cache = result
-                            self._device_cache_timestamp = time.time()
-                            cache_time = time.time() - cache_start
-                            logger.info(f"💾 Device info cached in {cache_time:.2f}s")
-                        
+                            logger.info(f"💾 Device info cached")
+
                         return result if result else {}
                 logger.warning("SwitchBotデバイス取得ツールが見つかりません")
                 return {}
-            else:
-                logger.warning("MCPクライアントが利用できません")
-                return {}
+
         except Exception as e:
             logger.error(f"MCPでのデバイス取得エラー: {e}")
             return {}
-    
-    def invalidate_device_cache(self):
-        """デバイス情報キャッシュを無効化（手動リフレッシュ用）"""
-        self._device_cache = None
-        self._device_cache_timestamp = None
-        logger.info("🗑️ Device cache invalidated")
+
     
     async def get_actual_device_ids(self) -> Dict[str, str]:
         """実際のデバイス情報を取得（IoT操作時に使用）"""
-        try:
             # SwitchBotデバイス一覧を取得（キャッシュ機能付き）
-            devices_info = await self._get_switchbot_devices_via_mcp()
-            
-            if not devices_info:
-                logger.warning("SwitchBotデバイスが取得できませんでした。デフォルト設定を使用します。")
-                return self._get_default_devices()
-            
-            device_mapping = {}
-            
-            # iot_agent.pyの実装に合わせてデバイスマッピング
-            # Get light and aircon device IDs from infraredRemoteList
-            light_device_id = next((device['deviceId'] for device in devices_info.get('infraredRemoteList', [])
-                                   if device['remoteType'] == 'Light'), None)
-            
-            aircon_device_id = next((device['deviceId'] for device in devices_info.get('infraredRemoteList', [])
-                                    if device['remoteType'] == 'Air Conditioner'), None)
-            
-            # Find Hub 2 device from deviceList
-            hub2_device_id = None
-            for device in devices_info.get('deviceList', []):
-                if device.get('deviceType') == 'Hub 2':
-                    hub2_device_id = device['deviceId']
-                    logger.info(f"SmartSpeaker-Agent: Hub 2デバイスを検出: {device.get('deviceName', 'Unknown')} (ID: {hub2_device_id})")
-                    break
-            
-            if not hub2_device_id:
-                logger.warning("警告: Hub 2デバイスが見つかりません。室内環境情報の取得ができません。")
-            
-            device_mapping = {
-                'light_device_id': light_device_id,
-                'aircon_device_id': aircon_device_id,
-                'hub2_device_id': hub2_device_id
-            }
-            
-            logger.info(f"SwitchBotデバイスマッピング: {device_mapping}")
-            return device_mapping if device_mapping else self._get_default_devices()
-            
-        except Exception as e:
-            logger.error(f"デバイス情報の取得に失敗: {e}")
-            return self._get_default_devices()
-    
+        devices_info = await self._get_switchbot_devices_via_mcp()
+        
+        if not devices_info:
+            logger.warning("SwitchBotデバイスが取得できませんでした。")
+
+        device_mapping = {}
+        
+        # iot_agent.pyの実装に合わせてデバイスマッピング
+        # Get light and aircon device IDs from infraredRemoteList
+        light_device_id = next((device['deviceId'] for device in devices_info.get('infraredRemoteList', [])
+                                if device['remoteType'] == 'Light'), None)
+        
+        aircon_device_id = next((device['deviceId'] for device in devices_info.get('infraredRemoteList', [])
+                                if device['remoteType'] == 'Air Conditioner'), None)
+        
+        # Find Hub 2 device from deviceList
+        hub2_device_id = None
+        for device in devices_info.get('deviceList', []):
+            if device.get('deviceType') == 'Hub 2':
+                hub2_device_id = device['deviceId']
+                logger.info(f"SmartSpeaker-Agent: Hub 2デバイスを検出: {device.get('deviceName', 'Unknown')} (ID: {hub2_device_id})")
+                break
+        
+        if not hub2_device_id:
+            logger.warning("警告: Hub 2デバイスが見つかりません。室内環境情報の取得ができません。")
+        
+        device_mapping = {
+            'light_device_id': light_device_id,
+            'aircon_device_id': aircon_device_id,
+            'hub2_device_id': hub2_device_id
+        }
+        
+        logger.info(f"SwitchBotデバイスマッピング: {device_mapping}")
+        return device_mapping
+
+
 
     
     def _get_default_devices(self) -> Dict[str, str]:
@@ -266,24 +220,32 @@ class SmartSpeakerAgent:
     
     async def _create_tools(self):
         """MCPクライアントからSwitchBotツールとGemini検索ツールを取得"""
+        create_tools_start = time.time()
+        logger.info(f"🔧 Tool creation started")
         tools = []
         
-        # MCPクライアントの初期化
+        # MCPクライアント初期化時間計測
+        mcp_init_start = time.time()
         self.mcp_client = await self._initialize_mcp_client()
-        logger.info(f"MCPクライアント初期化結果: {self.mcp_client is not None}")
+        mcp_init_time = time.time() - mcp_init_start
+        logger.info(f"⏱️ MCP client init: {mcp_init_time:.3f}s (result: {self.mcp_client is not None})")
         
         if self.mcp_client:
             try:
-                # MCPクライアントからツールを取得
+                # MCPツール取得時間計測
+                mcp_tools_start = time.time()
                 mcp_tools = await self.mcp_client.get_tools()
-                logger.info(f"SwitchBot MCPツールを取得: {len(mcp_tools)}個")
+                mcp_tools_time = time.time() - mcp_tools_start
+                logger.info(f"⏱️ MCP tools fetch: {mcp_tools_time:.3f}s ({len(mcp_tools)} tools)")
                 tools.extend(mcp_tools)
             except Exception as e:
-                logger.error(f"MCPツールの取得に失敗: {e}")
+                mcp_tools_time = time.time() - mcp_tools_start if 'mcp_tools_start' in locals() else 0
+                logger.error(f"❌ MCP tools fetch failed after {mcp_tools_time:.3f}s: {e}")
         else:
             logger.warning("MCPツールが利用できません")
         
-        # Gemini検索ツールを追加
+        # Gemini検索ツール作成時間計測
+        gemini_tool_start = time.time()
         @tool
         def gemini_search(query: str) -> Dict[str, Any]:
             """Geminiの検索機能を使用してWeb検索を実行します
@@ -313,7 +275,13 @@ class SmartSpeakerAgent:
                 }
         
         tools.append(gemini_search)
-        logger.info(f"全ツール数: {len(tools)}個（SwitchBot + Gemini検索）")
+        gemini_tool_time = time.time() - gemini_tool_start
+        logger.info(f"⏱️ Gemini tool creation: {gemini_tool_time:.3f}s")
+        
+        # 全体の時間計測
+        create_tools_total = time.time() - create_tools_start
+        logger.info(f"✅ Tool creation completed: {len(tools)} tools in {create_tools_total:.3f}s")
+        logger.info(f"📊 Breakdown - MCP init: {mcp_init_time:.3f}s | MCP fetch: {mcp_tools_time:.3f}s | Gemini: {gemini_tool_time:.3f}s")
         return tools
     
     def _create_graph(self):
@@ -406,11 +374,6 @@ class SmartSpeakerAgent:
         start_time = time.time()
         
         try:
-            # 初期化を確実に実行
-            init_start = time.time()
-            await self._ensure_initialized()
-            init_time = time.time() - init_start
-            
             if conversation_history is None:
                 conversation_history = {}
             
@@ -443,7 +406,7 @@ class SmartSpeakerAgent:
                 
                 # 実行時間のログ出力
                 total_time = time.time() - start_time
-                logger.info(f"⏱️ Performance Metrics - Total: {total_time:.2f}s | Init: {init_time:.2f}s | Graph: {graph_time:.2f}s")
+                logger.info(f"⏱️ Performance Metrics - Total: {total_time:.2f}s | Graph: {graph_time:.2f}s")
                 logger.info(f"SmartSpeaker-Response: {response_content}")
                 return response_content
             else:
@@ -473,6 +436,7 @@ async def main():
         # テストクエリ
         queries = [
             "エアコン消して",
+            "今日の天気は？"
         ]
         
         session_id = "test_session"

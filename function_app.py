@@ -33,14 +33,14 @@ secret = os.getenv("SW_SECRET")
 # LLMプロバイダーの設定（環境変数で切り替え可能）
 llm_provider = os.getenv("LLM_PROVIDER", "azure_openai")  # デフォルトはAzure OpenAI
 
-# スマートスピーカーエージェントを初期化
-smart_speaker_agent = create_smart_speaker_agent(llm_provider)
-
-# 会話履歴の初期化
+# スマートスピーカーエージェントと会話履歴をグローバル変数として宣言
+smart_speaker_agent = None
 conversation_history = {}
 
 async def chat_with_agent(user_input, session_id):
     """スマートスピーカーエージェントとチャットして応答を取得する"""
+    if smart_speaker_agent is None:
+        raise RuntimeError("SmartSpeakerAgent is not initialized. Call warmup endpoint first.")
     return await smart_speaker_agent.chat(user_input, session_id, conversation_history)
 
 # Alexa Skill Handler setup
@@ -187,10 +187,18 @@ def warmup(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('AzFunc: ウォームアップ関数が呼び出されました')
     
     try:
-        # 基本的なレスポンスを返す
+        global smart_speaker_agent
+        
+        # スマートスピーカーエージェントの初期化
+        if smart_speaker_agent is None:
+            logging.info('AzFunc: スマートスピーカーエージェントを初期化中...')
+            smart_speaker_agent = create_smart_speaker_agent(llm_provider)
+            logging.info('AzFunc: スマートスピーカーエージェント初期化完了')
+        
         response_data = {
             "status": "healthy",
-            "message": "Function App is warmed up"
+            "message": "Function App is warmed up",
+            "agent_initialized": smart_speaker_agent is not None
         }
         
         logging.info('AzFunc: ウォームアップ処理完了')
