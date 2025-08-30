@@ -153,7 +153,7 @@ sb.add_request_handler(SessionEndedRequestHandler())
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # ブループリントを登録
-app.register_blueprint(switchbot_bp)
+# app.register_blueprint(switchbot_bp)
 
 @app.route(route="http_trigger")
 def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
