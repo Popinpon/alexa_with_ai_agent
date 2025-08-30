@@ -118,6 +118,7 @@ def get_switchbot_device_status(context) -> str:
         
         result = get_device_status(device_id, SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
         logging.info(f"Retrieved status for device {device_id}")
+        logging.info(f"result: {result}")
         return json.dumps(result, ensure_ascii=False, indent=2)
     
     except Exception as e:

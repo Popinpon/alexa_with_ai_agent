@@ -15,7 +15,8 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from shared.gemini_agent import GeminiAgent
 
-from langchain_mcp_adapters.client import MultiServerMCPClient
+# from langchain_mcp_adapters.client import MultiServerMCPClient
+from shared.switchbot import SwitchBotClient
 
 # ログ設定
 logging.basicConfig(
@@ -42,8 +43,9 @@ class SmartSpeakerAgent:
         logger.info(f"🚀 SmartSpeakerAgent initialization started")
         
         self.llm_provider = llm_provider
-        self.mcp_client = None
-                # デバイス情報キャッシュ
+        # SwitchBotクライアントの初期化
+        self.switchbot_client = SwitchBotClient()
+        # デバイス情報キャッシュ
         self._device_cache = None
         self._device_cache_timestamp = None
         self._cache_ttl = 300  # 5分間有効
@@ -59,10 +61,10 @@ class SmartSpeakerAgent:
         gemini_time = time.time() - gemini_start
         logger.info(f"⏱️ GeminiAgent creation: {gemini_time:.3f}s")
         
-        # 非同期初期化を同期的に実行
-        logger.info(f"🔄 Starting async initialization during __init__")
-        self.tools = asyncio.run(self._create_tools())
-        self.device_ids = asyncio.run(self.get_actual_device_ids())
+        # 初期化を実行
+        logger.info(f"🔄 Starting initialization during __init__")
+        self.tools = self._create_tools()
+        self.device_ids = self.get_actual_device_ids()
         self.graph = self._create_graph()
         self._initialized = True
         
@@ -113,47 +115,39 @@ class SmartSpeakerAgent:
         current_time = time.time()
         return (current_time - self._device_cache_timestamp) < self._cache_ttl
     
-    async def _get_switchbot_devices_via_mcp(self) -> Dict[str, Any]:
-        """MCPを使用してSwitchBotデバイス情報を取得（キャッシュ機能付き）"""
+    def _get_switchbot_devices(self) -> Dict[str, Any]:
+        """SwitchBotクライアントを使用してデバイス情報を取得（キャッシュ機能付き）"""
         # キャッシュが有効な場合はキャッシュから返す
         if self._is_cache_valid():
             logger.info("📋 Using cached device information")
             return self._device_cache
         
         try:
-            if self.mcp_client:
-                # MCPクライアントからツールを取得
-                tools = await self.mcp_client.get_tools()
-                # get_switchbot_devicesツールを探す
-                for tool in tools:
-                    if tool.name == "get_switchbot_devices":
-                        result = await tool.ainvoke({})
-                        
-                        # 結果が文字列の場合はJSONとして解析
-                        parsed_result = json.loads(result)
-                        if 'body' in parsed_result:
-                            result = parsed_result['body']
-                        else:
-                            result = parsed_result
-                        
-                        # キャッシュに保存
-                        if result:
-                            self._device_cache = result
-                            logger.info(f"💾 Device info cached")
-
-                        return result if result else {}
-                logger.warning("SwitchBotデバイス取得ツールが見つかりません")
-                return {}
-
+            result = self.switchbot_client.get_device_list()
+            
+            # レスポンスの'body'部分を取得
+            if 'body' in result:
+                device_data = result['body']
+            else:
+                device_data = result
+            
+            # キャッシュに保存
+            if device_data:
+                self._device_cache = device_data
+                self._device_cache_timestamp = time.time()
+                logger.info(f"💾 Device info cached")
+            
+            return device_data if device_data else {}
+            
         except Exception as e:
-            logger.error(f"MCPでのデバイス取得エラー: {e}")
+            logger.error(f"SwitchBotデバイス取得エラー: {e}")
             return {}
 
     
-    async def get_actual_device_ids(self) -> Dict[str, str]:
+    def get_actual_device_ids(self) -> Dict[str, str]:
         """実際のデバイス情報を取得（IoT操作時に使用）"""
-            # SwitchBotデバイス一覧を取得（キャッシュ機能付き）
-        devices_info = await self._get_switchbot_devices_via_mcp()
+        # SwitchBotデバイス一覧を取得（キャッシュ機能付き）
+        devices_info = self._get_switchbot_devices()
         
         if not devices_info:
             logger.warning("SwitchBotデバイスが取得できませんでした。")
@@ -218,31 +212,71 @@ class SmartSpeakerAgent:
         else:
             raise ValueError(f"Unsupported LLM provider: {self.llm_provider}")
     
-    async def _create_tools(self):
-        """MCPクライアントからSwitchBotツールとGemini検索ツールを取得"""
+    def _create_tools(self):
+        """SwitchBotツールとGemini検索ツールを作成"""
         create_tools_start = time.time()
         logger.info(f"🔧 Tool creation started")
         tools = []
         
-        # MCPクライアント初期化時間計測
-        mcp_init_start = time.time()
-        self.mcp_client = await self._initialize_mcp_client()
-        mcp_init_time = time.time() - mcp_init_start
-        logger.info(f"⏱️ MCP client init: {mcp_init_time:.3f}s (result: {self.mcp_client is not None})")
+        # SwitchBotツールを作成
+        switchbot_tools_start = time.time()
         
-        if self.mcp_client:
+        @tool
+        def get_switchbot_devices() -> Dict[str, Any]:
+            """SwitchBotデバイス一覧を取得します"""
             try:
-                # MCPツール取得時間計測
-                mcp_tools_start = time.time()
-                mcp_tools = await self.mcp_client.get_tools()
-                mcp_tools_time = time.time() - mcp_tools_start
-                logger.info(f"⏱️ MCP tools fetch: {mcp_tools_time:.3f}s ({len(mcp_tools)} tools)")
-                tools.extend(mcp_tools)
+                return self.switchbot_client.get_device_list()
             except Exception as e:
-                mcp_tools_time = time.time() - mcp_tools_start if 'mcp_tools_start' in locals() else 0
-                logger.error(f"❌ MCP tools fetch failed after {mcp_tools_time:.3f}s: {e}")
-        else:
-            logger.warning("MCPツールが利用できません")
+                logger.error(f"SwitchBotデバイス取得エラー: {e}")
+                return {"error": str(e)}
+        
+        @tool
+        def get_device_status(device_id: str) -> Dict[str, Any]:
+            """指定したSwitchBotデバイスの状態を取得します
+            
+            Args:
+                device_id: デバイスID
+            """
+            try:
+                return self.switchbot_client.get_device_status(device_id)
+            except Exception as e:
+                logger.error(f"デバイス状態取得エラー: {e}")
+                return {"error": str(e)}
+        
+        @tool
+        def control_light(device_id: str, power_state: str) -> Dict[str, Any]:
+            """ライトを制御します
+            
+            Args:
+                device_id: デバイスID
+                power_state: 'on' または 'off'
+            """
+            try:
+                return self.switchbot_client.control_light(device_id, power_state)
+            except Exception as e:
+                logger.error(f"ライト制御エラー: {e}")
+                return {"error": str(e)}
+        
+        @tool
+        def control_aircon(device_id: str, temperature: int, mode: int, fan_speed: int, power_state: str) -> Dict[str, Any]:
+            """エアコンを制御します
+            
+            Args:
+                device_id: デバイスID
+                temperature: 温度設定（16-30）
+                mode: モード（1:自動, 2:冷房, 3:除湿, 4:送風, 5:暖房）
+                fan_speed: 風量（1:自動, 2:弱, 3:中, 4:強）
+                power_state: 'on' または 'off'
+            """
+            try:
+                return self.switchbot_client.control_aircon(device_id, temperature, mode, fan_speed, power_state)
+            except Exception as e:
+                logger.error(f"エアコン制御エラー: {e}")
+                return {"error": str(e)}
+        
+        tools.extend([get_switchbot_devices, get_device_status, control_light, control_aircon])
+        switchbot_tools_time = time.time() - switchbot_tools_start
+        logger.info(f"⏱️ SwitchBot tools creation: {switchbot_tools_time:.3f}s")
         
         # Gemini検索ツール作成時間計測
         gemini_tool_start = time.time()
@@ -281,11 +315,11 @@ class SmartSpeakerAgent:
         # 全体の時間計測
         create_tools_total = time.time() - create_tools_start
         logger.info(f"✅ Tool creation completed: {len(tools)} tools in {create_tools_total:.3f}s")
-        logger.info(f"📊 Breakdown - MCP init: {mcp_init_time:.3f}s | MCP fetch: {mcp_tools_time:.3f}s | Gemini: {gemini_tool_time:.3f}s")
+        logger.info(f"📊 Breakdown - SwitchBot: {switchbot_tools_time:.3f}s | Gemini: {gemini_tool_time:.3f}s")
         return tools
     
     def _create_graph(self):
-        """LangGraphのグラフを作成（MCPツールのみ使用）"""
+        """LangGraphのグラフを作成"""
         async def agent_node(state: AgentState):
             """エージェントノード - LLMがメッセージを処理"""
             messages = state["messages"]
