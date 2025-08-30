@@ -190,8 +190,7 @@ def warmup(req: func.HttpRequest) -> func.HttpResponse:
         # 基本的なレスポンスを返す
         response_data = {
             "status": "healthy",
-            "message": "Function App is warmed up",
-            "timestamp": func.DateTime.utcnow().isoformat()
+            "message": "Function App is warmed up"
         }
         
         logging.info('AzFunc: ウォームアップ処理完了')
