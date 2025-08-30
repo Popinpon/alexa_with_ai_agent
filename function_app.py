@@ -178,6 +178,39 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
+@app.route(route="warmup")
+def warmup(_: func.HttpRequest) -> func.HttpResponse:
+    """
+    コールドスタート対策用のウォームアップ関数
+    定期的に呼び出すことでFunction Appのインスタンスを温かく保つ
+    """
+    logging.info('AzFunc: ウォームアップ関数が呼び出されました')
+    
+    try:
+        # 基本的なレスポンスを返す
+        response_data = {
+            "status": "healthy",
+            "message": "Function App is warmed up",
+            "timestamp": func.DateTime.utcnow().isoformat()
+        }
+        
+        logging.info('AzFunc: ウォームアップ処理完了')
+        
+        return func.HttpResponse(
+            body=json.dumps(response_data),
+            status_code=200,
+            headers={"Content-Type": "application/json"}
+        )
+        
+    except Exception as e:
+        logging.error(f"Warmup function error: {str(e)}")
+        return func.HttpResponse(
+            body=json.dumps({"error": str(e)}),
+            status_code=500,
+            headers={"Content-Type": "application/json"}
+        )
+
+
 
 
 
