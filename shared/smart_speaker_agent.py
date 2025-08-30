@@ -43,7 +43,10 @@ class SmartSpeakerAgent:
         
         self.llm_provider = llm_provider
         self.mcp_client = None
-        
+                # デバイス情報キャッシュ
+        self._device_cache = None
+        self._device_cache_timestamp = None
+        self._cache_ttl = 300  # 5分間有効
         # LLM作成時間計測
         llm_start = time.time()
         self.llm = self._create_llm()
@@ -66,39 +69,8 @@ class SmartSpeakerAgent:
         init_total = time.time() - init_start
         logger.info(f"✅ SmartSpeakerAgent initialization completed: {init_total:.3f}s")
         
-        # デバイス情報キャッシュ
-        self._device_cache = None
-        self._device_cache_timestamp = None
-        self._cache_ttl = 300  # 5分間有効
+
     
-    async def _ensure_initialized(self):
-        """必要に応じて非同期初期化を実行"""
-        if not self._initialized:
-            async_init_start = time.time()
-            logger.info(f"🔄 Async initialization started")
-            
-            # ツール作成時間計測
-            tools_start = time.time()
-            self.tools = await self._create_tools()
-            tools_time = time.time() - tools_start
-            logger.info(f"⏱️ Tools creation: {tools_time:.3f}s")
-            
-            # デバイスID取得時間計測
-            devices_start = time.time()
-            self.device_ids = self._get_default_devices()  # デフォルトデバイスを使用
-            devices_time = time.time() - devices_start
-            logger.info(f"⏱️ Device IDs setup: {devices_time:.3f}s")
-            
-            # グラフ作成時間計測
-            graph_start = time.time()
-            self.graph = self._create_graph()
-            graph_time = time.time() - graph_start
-            logger.info(f"⏱️ Graph creation: {graph_time:.3f}s")
-            
-            self._initialized = True
-            
-            async_init_total = time.time() - async_init_start
-            logger.info(f"✅ Async initialization completed: {async_init_total:.3f}s")
     
     async def _initialize_mcp_client(self):
         """MCPクライアントを初期化（記事に従った実装）"""
