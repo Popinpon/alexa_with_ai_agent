@@ -1,14 +1,8 @@
 import azure.functions as func
 import json
 import logging
-import os
 from dotenv import load_dotenv
-from shared.switchbot import (
-    get_device_list,
-    get_device_status,
-    control_light,
-    control_aircon
-)
+from shared.switchbot import SwitchBotClient
 
 # 環境変数を読み込み
 load_dotenv()
@@ -16,9 +10,8 @@ load_dotenv()
 # Blueprintを作成
 bp = func.Blueprint()
 
-# SwitchBot認証情報を環境変数から取得
-SWITCHBOT_TOKEN = os.getenv("SW_TOKEN")
-SWITCHBOT_SECRET = os.getenv("SW_SECRET")
+# SwitchBotクライアントを初期化
+switchbot_client = SwitchBotClient()
 
 # ツールプロパティの定義
 tool_properties_get_devices_json = json.dumps([])
@@ -82,12 +75,7 @@ tool_properties_control_aircon_json = json.dumps([
 def get_switchbot_devices(context) -> str:
     """Get list of all SwitchBot devices"""
     try:
-        if not SWITCHBOT_TOKEN or not SWITCHBOT_SECRET:
-            return json.dumps({
-                "error": "SwitchBot credentials not configured. Please set SWITCHBOT_TOKEN and SWITCHBOT_SECRET environment variables."
-            })
-        
-        result = get_device_list(SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
+        result = switchbot_client.get_device_list()
         logging.info(f"Retrieved device list: {len(result.get('body', {}).get('deviceList', []))} devices")
         return json.dumps(result, ensure_ascii=False, indent=2)
     
@@ -105,18 +93,13 @@ def get_switchbot_devices(context) -> str:
 def get_switchbot_device_status(context) -> str:
     """Get device status by device ID"""
     try:
-        if not SWITCHBOT_TOKEN or not SWITCHBOT_SECRET:
-            return json.dumps({
-                "error": "SwitchBot credentials not configured"
-            })
-        
         content = json.loads(context)
         device_id = content["arguments"]["device_id"]
         
         if not device_id:
             return json.dumps({"error": "device_id is required"})
         
-        result = get_device_status(device_id, SWITCHBOT_TOKEN, SWITCHBOT_SECRET)
+        result = switchbot_client.get_device_status(device_id)
         logging.info(f"Retrieved status for device {device_id}")
         logging.info(f"result: {result}")
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -135,11 +118,6 @@ def get_switchbot_device_status(context) -> str:
 def control_switchbot_light(context) -> str:
     """Control SwitchBot light device"""
     try:
-        if not SWITCHBOT_TOKEN or not SWITCHBOT_SECRET:
-            return json.dumps({
-                "error": "SwitchBot credentials not configured"
-            })
-        
         content = json.loads(context)
         device_id = content["arguments"]["device_id"]
         power_state = content["arguments"]["power_state"]
@@ -150,7 +128,7 @@ def control_switchbot_light(context) -> str:
         if power_state not in ["on", "off"]:
             return json.dumps({"error": "power_state must be 'on' or 'off'"})
         
-        result = control_light(device_id, SWITCHBOT_TOKEN, SWITCHBOT_SECRET, power_state)
+        result = switchbot_client.control_light(device_id, power_state)
         logging.info(f"Controlled light {device_id} - {power_state}")
         return json.dumps(result, ensure_ascii=False, indent=2)
     
@@ -168,11 +146,6 @@ def control_switchbot_light(context) -> str:
 def control_switchbot_aircon(context) -> str:
     """Control SwitchBot air conditioner"""
     try:
-        if not SWITCHBOT_TOKEN or not SWITCHBOT_SECRET:
-            return json.dumps({
-                "error": "SwitchBot credentials not configured"
-            })
-        
         content = json.loads(context)
         args = content["arguments"]
         
@@ -192,9 +165,8 @@ def control_switchbot_aircon(context) -> str:
         if power_state not in ["on", "off"]:
             return json.dumps({"error": "power_state must be 'on' or 'off'"})
         
-        result = control_aircon(
-            device_id, SWITCHBOT_TOKEN, SWITCHBOT_SECRET,
-            temperature, mode, fan_speed, power_state
+        result = switchbot_client.control_aircon(
+            device_id, temperature, mode, fan_speed, power_state
         )
         logging.info(f"Controlled aircon {device_id} - temp:{temperature}, mode:{mode}, fan:{fan_speed}, power:{power_state}")
         return json.dumps(result, ensure_ascii=False, indent=2)
