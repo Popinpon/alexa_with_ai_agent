@@ -105,7 +105,7 @@ class QuestionIntentHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak("何か質問はありませんか？").response
         input_text = input_text.replace(" ", "")
         # スマートスピーカーエージェントに問い合わせ
-        response_text = asyncio.run(chat_with_agent(input_text, session_id))
+        response_text = chat_with_agent(input_text, session_id)
         
         # return handler_input.response_builder.speak(response_text).response
         return (
@@ -128,7 +128,7 @@ class FallbackIntentHandler(AbstractRequestHandler):
             logging.info(f"AI-Response: {speech_text}")
             return handler_input.response_builder.speak(speech_text).response
         input_text = input_text.replace(" ", "")
-        response_text = asyncio.run(chat_with_agent(input_text, session_id))
+        response_text = chat_with_agent(input_text, session_id)
         return (
             handler_input.response_builder.speak(response_text)
             .add_directive(directive)
