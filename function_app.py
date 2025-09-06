@@ -37,11 +37,26 @@ llm_provider = os.getenv("LLM_PROVIDER", "azure_openai")  # デフォルトはAz
 smart_speaker_agent = None
 conversation_history = {}
 
-async def chat_with_agent(user_input, session_id):
-    """スマートスピーカーエージェントとチャットして応答を取得する"""
+async def chat_with_agent_cycle(user_input, session_id):
+    """会話サイクルベースのチャット（タイムアウト対応）"""
     if smart_speaker_agent is None:
         raise RuntimeError("SmartSpeakerAgent is not initialized. Call warmup endpoint first.")
-    return await smart_speaker_agent.chat(user_input, session_id, conversation_history)
+    
+    # 会話サイクルを実行
+    result = await smart_speaker_agent.chat_cycle(user_input, session_id)
+    
+    # 応答テキストを取得
+    response_text = result.get("prepared_response", "処理が完了しました。")
+    
+    # 継続処理が必要な場合のログ
+    if result.get("should_continue_processing", False):
+        logging.info(f"Session {session_id}: タイムアウトによる継続待ち状態")
+    
+    return response_text
+
+def chat_with_agent(user_input, session_id):
+    """従来の同期チャット関数（後方互換性）"""
+    return asyncio.run(chat_with_agent_cycle(user_input, session_id))
 
 # Alexa Skill Handler setup
 sb = SkillBuilder()
