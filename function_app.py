@@ -18,7 +18,7 @@ from ask_sdk_model.dialog import ElicitSlotDirective
 from ask_sdk_model import Intent, IntentConfirmationStatus, Slot, SlotConfirmationStatus
 
 # 共有モジュールからsmart_speaker_agentをインポート
-from shared.smart_speaker_agent import create_smart_speaker_agent
+from shared.smart_speaker_agent import SmartSpeakerAgent
 
 
 # アプリケーションのログ設定
@@ -207,7 +207,7 @@ def warmup(req: func.HttpRequest) -> func.HttpResponse:
         # スマートスピーカーエージェントの初期化
         if smart_speaker_agent is None:
             logging.info('AzFunc: スマートスピーカーエージェントを初期化中...')
-            smart_speaker_agent = create_smart_speaker_agent(llm_provider)
+            smart_speaker_agent = SmartSpeakerAgent(llm_provider)
             logging.info('AzFunc: スマートスピーカーエージェント初期化完了')
         
         response_data = {
