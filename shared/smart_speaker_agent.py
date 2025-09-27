@@ -1,21 +1,20 @@
-import json
+"""
+Smart Speaker Agent - リファクタリング後のメインクラス
+"""
 import logging
 import os
-import asyncio
 import time
-from typing import Dict, List, Any, TypedDict, Annotated
-from enum import Enum
+from typing import Dict, List, Any
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
-from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_openai import AzureChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-from shared.gemini_agent import GeminiAgent
 
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from shared.types import LLMProvider, AgentState, ConversationState
+from shared.switchbot_manager import SwitchBotManager
+from shared.conversation_manager import ConversationManager
+from shared.workflow_builder import WorkflowBuilder
+from shared.gemini_agent import GeminiAgent
 
 # ログ設定
 logging.basicConfig(
@@ -25,28 +24,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class LLMProvider(Enum):
-    AZURE_OPENAI = "azure_openai"
-    GEMINI = "gemini"
-
-
-class AgentState(TypedDict):
-    messages: Annotated[List[Any], add_messages]
-    device_ids: Dict[str, str]
-    llm_provider: str
-
 
 class SmartSpeakerAgent:
+    """スマートスピーカーエージェントのメインクラス（リファクタリング後）"""
+    
     def __init__(self, llm_provider: str = "azure_openai"):
         init_start = time.time()
         logger.info(f"🚀 SmartSpeakerAgent initialization started")
         
         self.llm_provider = llm_provider
-        self.mcp_client = None
-                # デバイス情報キャッシュ
-        self._device_cache = None
-        self._device_cache_timestamp = None
-        self._cache_ttl = 300  # 5分間有効
+        
         # LLM作成時間計測
         llm_start = time.time()
         self.llm = self._create_llm()
@@ -59,145 +46,23 @@ class SmartSpeakerAgent:
         gemini_time = time.time() - gemini_start
         logger.info(f"⏱️ GeminiAgent creation: {gemini_time:.3f}s")
         
-        # 非同期初期化を同期的に実行
-        logger.info(f"🔄 Starting async initialization during __init__")
-        self.tools = asyncio.run(self._create_tools())
-        self.device_ids = asyncio.run(self.get_actual_device_ids())
-        self.graph = self._create_graph()
+        # マネージャークラスの初期化
+        self.switchbot_manager = SwitchBotManager()
+        self.conversation_manager = ConversationManager(self.llm)
+        
+        # ツールとワークフロー構築
+        self.tools = self._create_tools()
+        self.device_ids = self.switchbot_manager.get_actual_device_ids()
+        
+        # ワークフローの構築
+        self.workflow_builder = WorkflowBuilder(self.llm, self.tools, self.gemini_search_agent)
+        self.graph = self.workflow_builder.create_agent_graph()
+        self.conversation_graph = self.workflow_builder.create_conversation_graph()
+        
         self._initialized = True
         
         init_total = time.time() - init_start
         logger.info(f"✅ SmartSpeakerAgent initialization completed: {init_total:.3f}s")
-        
-
-    
-    
-    async def _initialize_mcp_client(self):
-        """MCPクライアントを初期化（記事に従った実装）"""
-        if self.mcp_client:
-            return self.mcp_client
-            
-        try:
-            mcp_start = time.time()
-            logger.info(f"🔌 MCP client initialization started")
-            
-            # ユーザー認証情報は現在使用しない
-            
-            # SwitchBot MCP サーバーの設定（.mcp.jsonから取得）
-            mcp_extension_key = os.getenv("MCP_EXTENSION_KEY")
-            
-            client = MultiServerMCPClient({
-                "switchbot": {
-                    "transport": "sse",
-                    "url": "https://oai-alexa.azurewebsites.net/runtime/webhooks/mcp/sse",
-                    "headers": {
-                        "x-functions-key": mcp_extension_key
-                    }
-                }
-            })
-            
-            mcp_time = time.time() - mcp_start
-            logger.info(f"✅ SwitchBot MCPクライアント初期化完了: {mcp_time:.3f}s")
-            return client
-            
-        except Exception as e:
-            mcp_time = time.time() - mcp_start if 'mcp_start' in locals() else 0
-            logger.error(f"❌ MCP client initialization failed after {mcp_time:.3f}s: {e}")
-            return None
-    
-    def _is_cache_valid(self) -> bool:
-        """キャッシュが有効かどうかを確認"""
-        if self._device_cache is None or self._device_cache_timestamp is None:
-            return False
-        
-        current_time = time.time()
-        return (current_time - self._device_cache_timestamp) < self._cache_ttl
-    
-    async def _get_switchbot_devices_via_mcp(self) -> Dict[str, Any]:
-        """MCPを使用してSwitchBotデバイス情報を取得（キャッシュ機能付き）"""
-        # キャッシュが有効な場合はキャッシュから返す
-        if self._is_cache_valid():
-            logger.info("📋 Using cached device information")
-            return self._device_cache
-        
-        try:
-            if self.mcp_client:
-                # MCPクライアントからツールを取得
-                tools = await self.mcp_client.get_tools()
-                # get_switchbot_devicesツールを探す
-                for tool in tools:
-                    if tool.name == "get_switchbot_devices":
-                        result = await tool.ainvoke({})
-                        
-                        # 結果が文字列の場合はJSONとして解析
-                        parsed_result = json.loads(result)
-                        if 'body' in parsed_result:
-                            result = parsed_result['body']
-                        else:
-                            result = parsed_result
-                        
-                        # キャッシュに保存
-                        if result:
-                            self._device_cache = result
-                            logger.info(f"💾 Device info cached")
-
-                        return result if result else {}
-                logger.warning("SwitchBotデバイス取得ツールが見つかりません")
-                return {}
-
-        except Exception as e:
-            logger.error(f"MCPでのデバイス取得エラー: {e}")
-            return {}
-
-    
-    async def get_actual_device_ids(self) -> Dict[str, str]:
-        """実際のデバイス情報を取得（IoT操作時に使用）"""
-            # SwitchBotデバイス一覧を取得（キャッシュ機能付き）
-        devices_info = await self._get_switchbot_devices_via_mcp()
-        
-        if not devices_info:
-            logger.warning("SwitchBotデバイスが取得できませんでした。")
-
-        device_mapping = {}
-        
-        # iot_agent.pyの実装に合わせてデバイスマッピング
-        # Get light and aircon device IDs from infraredRemoteList
-        light_device_id = next((device['deviceId'] for device in devices_info.get('infraredRemoteList', [])
-                                if device['remoteType'] == 'Light'), None)
-        
-        aircon_device_id = next((device['deviceId'] for device in devices_info.get('infraredRemoteList', [])
-                                if device['remoteType'] == 'Air Conditioner'), None)
-        
-        # Find Hub 2 device from deviceList
-        hub2_device_id = None
-        for device in devices_info.get('deviceList', []):
-            if device.get('deviceType') == 'Hub 2':
-                hub2_device_id = device['deviceId']
-                logger.info(f"SmartSpeaker-Agent: Hub 2デバイスを検出: {device.get('deviceName', 'Unknown')} (ID: {hub2_device_id})")
-                break
-        
-        if not hub2_device_id:
-            logger.warning("警告: Hub 2デバイスが見つかりません。室内環境情報の取得ができません。")
-        
-        device_mapping = {
-            'light_device_id': light_device_id,
-            'aircon_device_id': aircon_device_id,
-            'hub2_device_id': hub2_device_id
-        }
-        
-        logger.info(f"SwitchBotデバイスマッピング: {device_mapping}")
-        return device_mapping
-
-
-
-    
-    def _get_default_devices(self) -> Dict[str, str]:
-        """デフォルトのデバイス設定を返す"""
-        return {
-            'light_device_id': "02-202403301114-45200468",
-            'aircon_device_id': "02-202504191706-42866040", 
-            'hub2_device_id': "C6FD9F3D1826"
-        }
     
     def _create_llm(self):
         """LLMプロバイダーに応じてLLMを作成"""
@@ -218,34 +83,18 @@ class SmartSpeakerAgent:
         else:
             raise ValueError(f"Unsupported LLM provider: {self.llm_provider}")
     
-    async def _create_tools(self):
-        """MCPクライアントからSwitchBotツールとGemini検索ツールを取得"""
+    def _create_tools(self):
+        """ツールを作成"""
         create_tools_start = time.time()
         logger.info(f"🔧 Tool creation started")
-        tools = []
         
-        # MCPクライアント初期化時間計測
-        mcp_init_start = time.time()
-        self.mcp_client = await self._initialize_mcp_client()
-        mcp_init_time = time.time() - mcp_init_start
-        logger.info(f"⏱️ MCP client init: {mcp_init_time:.3f}s (result: {self.mcp_client is not None})")
+        # SwitchBotツールを作成
+        switchbot_tools = self.switchbot_manager.create_switchbot_tools()
         
-        if self.mcp_client:
-            try:
-                # MCPツール取得時間計測
-                mcp_tools_start = time.time()
-                mcp_tools = await self.mcp_client.get_tools()
-                mcp_tools_time = time.time() - mcp_tools_start
-                logger.info(f"⏱️ MCP tools fetch: {mcp_tools_time:.3f}s ({len(mcp_tools)} tools)")
-                tools.extend(mcp_tools)
-            except Exception as e:
-                mcp_tools_time = time.time() - mcp_tools_start if 'mcp_tools_start' in locals() else 0
-                logger.error(f"❌ MCP tools fetch failed after {mcp_tools_time:.3f}s: {e}")
-        else:
-            logger.warning("MCPツールが利用できません")
-        
-        # Gemini検索ツール作成時間計測
+        # Gemini検索ツールを作成
         gemini_tool_start = time.time()
+        from langchain_core.tools import tool
+        
         @tool
         def gemini_search(query: str) -> Dict[str, Any]:
             """Geminiの検索機能を使用してWeb検索を実行します
@@ -274,76 +123,17 @@ class SmartSpeakerAgent:
                     "success": False
                 }
         
-        tools.append(gemini_search)
         gemini_tool_time = time.time() - gemini_tool_start
         logger.info(f"⏱️ Gemini tool creation: {gemini_tool_time:.3f}s")
+        
+        # ツールを結合
+        tools = switchbot_tools.copy()
+        tools.append(gemini_search)
         
         # 全体の時間計測
         create_tools_total = time.time() - create_tools_start
         logger.info(f"✅ Tool creation completed: {len(tools)} tools in {create_tools_total:.3f}s")
-        logger.info(f"📊 Breakdown - MCP init: {mcp_init_time:.3f}s | MCP fetch: {mcp_tools_time:.3f}s | Gemini: {gemini_tool_time:.3f}s")
         return tools
-    
-    def _create_graph(self):
-        """LangGraphのグラフを作成（MCPツールのみ使用）"""
-        async def agent_node(state: AgentState):
-            """エージェントノード - LLMがメッセージを処理"""
-            messages = state["messages"]
-            
-            llm_with_tools = self.llm.bind_tools(self.tools)
-            response = await llm_with_tools.ainvoke(messages)
-            
-            return {"messages": [response]}
-        
-        async def tools_node(state: AgentState):
-            """統合ツールノード - 全てのツール（MCP + Gemini）を処理"""
-            messages = state["messages"]
-            last_message = messages[-1]
-            
-            if not (hasattr(last_message, 'tool_calls') and last_message.tool_calls):
-                return state
-            
-            try:
-                # ツール実行時間を計測
-                tool_start = time.time()
-                tool_calls = last_message.tool_calls
-                logger.info(f"🔧 Tool calls: {[call['name'] for call in tool_calls]}")
-                
-                # 統一化されたツールセット（self.tools）を使用
-                tool_node = ToolNode(self.tools)
-                result = await tool_node.ainvoke(state)
-                
-                tool_time = time.time() - tool_start
-                logger.info(f"⏱️ Tool execution time: {tool_time:.2f}s")
-                return result
-                    
-            except Exception as e:
-                tool_time = time.time() - tool_start if 'tool_start' in locals() else 0
-                logger.error(f"Tools node error after {tool_time:.2f}s: {e}")
-                return state
-        
-        def should_continue(state: AgentState):
-            """ツール呼び出しが必要かどうかを判定"""
-            messages = state["messages"]
-            last_message = messages[-1]
-            
-            if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                return "tools"
-            return END
-        
-        # グラフを構築
-        workflow = StateGraph(AgentState)
-        
-        # ノードを追加
-        workflow.add_node("agent", agent_node)
-        workflow.add_node("tools", tools_node)
-        
-        # エッジを追加
-        workflow.add_edge(START, "agent")
-        workflow.add_conditional_edges("agent", should_continue, ["tools", END])
-        workflow.add_edge("tools", "agent")
-        
-        return workflow.compile()
     
     def get_system_message(self) -> str:
         """システムメッセージを返す"""
@@ -369,6 +159,48 @@ class SmartSpeakerAgent:
 すべての応答は音声での読み上げに適した自然な日本語で行ってください。
 """
     
+    async def chat_cycle(self, user_input: str, session_id: str) -> Dict[str, Any]:
+        """会話サイクルを実行（Alexaレイヤー用）- LangGraphベース"""
+        # 初期状態構築
+        conversation_history = {}
+        if session_id not in conversation_history:
+            conversation_history[session_id] = [SystemMessage(content=self.get_system_message())]
+        
+        messages = conversation_history[session_id].copy()
+        messages.append(HumanMessage(content=user_input))
+        
+        initial_state: ConversationState = {
+            "session_id": session_id,
+            "messages": messages,
+            "device_ids": self.device_ids,
+            "llm_provider": self.llm_provider,
+            "processing_start_time": time.time(),
+            "current_task": None,
+            "is_processing": False,
+            "has_timeout": False,
+            "partial_result": None,
+            "user_input_type": "",
+            "should_continue_processing": False,
+            "prepared_response": "",
+            "cycle_complete": False
+        }
+        
+        try:
+            # 会話サイクル専用のLangGraphを実行
+            result = await self.conversation_graph.ainvoke(initial_state)
+            
+            return {
+                "prepared_response": result.get("prepared_response", "処理が完了しました。"),
+                "should_continue_processing": result.get("should_continue_processing", False)
+            }
+            
+        except Exception as e:
+            logger.error(f"Chat cycle error: {e}")
+            return {
+                "prepared_response": "申し訳ございません。処理中にエラーが発生しました。",
+                "should_continue_processing": False
+            }
+
     async def chat(self, user_input: str, session_id: str, conversation_history: Dict[str, List] = None) -> str:
         """ユーザー入力を処理して応答を返す"""
         start_time = time.time()
@@ -422,9 +254,6 @@ class SmartSpeakerAgent:
             return "申し訳ありません。処理中にエラーが発生しました。"
 
 
-def create_smart_speaker_agent(llm_provider: str = "azure_openai") -> SmartSpeakerAgent:
-    """スマートスピーカーエージェントを作成する工場関数"""
-    return SmartSpeakerAgent(llm_provider)
 
 
 # 使用例とテスト
@@ -451,4 +280,5 @@ async def main():
         print("環境変数が設定されているか確認してください")
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())

@@ -18,7 +18,7 @@ from ask_sdk_model.dialog import ElicitSlotDirective
 from ask_sdk_model import Intent, IntentConfirmationStatus, Slot, SlotConfirmationStatus
 
 # 共有モジュールからsmart_speaker_agentをインポート
-from shared.smart_speaker_agent import create_smart_speaker_agent
+from shared.smart_speaker_agent import SmartSpeakerAgent
 
 
 # アプリケーションのログ設定
@@ -37,11 +37,26 @@ llm_provider = os.getenv("LLM_PROVIDER", "azure_openai")  # デフォルトはAz
 smart_speaker_agent = None
 conversation_history = {}
 
-async def chat_with_agent(user_input, session_id):
-    """スマートスピーカーエージェントとチャットして応答を取得する"""
+async def chat_with_agent_cycle(user_input, session_id):
+    """会話サイクルベースのチャット（タイムアウト対応）"""
     if smart_speaker_agent is None:
         raise RuntimeError("SmartSpeakerAgent is not initialized. Call warmup endpoint first.")
-    return await smart_speaker_agent.chat(user_input, session_id, conversation_history)
+    
+    # 会話サイクルを実行
+    result = await smart_speaker_agent.chat_cycle(user_input, session_id)
+    
+    # 応答テキストを取得
+    response_text = result.get("prepared_response", "処理が完了しました。")
+    
+    # 継続処理が必要な場合のログ
+    if result.get("should_continue_processing", False):
+        logging.info(f"Session {session_id}: タイムアウトによる継続待ち状態")
+    
+    return response_text
+
+def chat_with_agent(user_input, session_id):
+    """従来の同期チャット関数（後方互換性）"""
+    return asyncio.run(chat_with_agent_cycle(user_input, session_id))
 
 # Alexa Skill Handler setup
 sb = SkillBuilder()
@@ -90,7 +105,7 @@ class QuestionIntentHandler(AbstractRequestHandler):
             return handler_input.response_builder.speak("何か質問はありませんか？").response
         input_text = input_text.replace(" ", "")
         # スマートスピーカーエージェントに問い合わせ
-        response_text = asyncio.run(chat_with_agent(input_text, session_id))
+        response_text = chat_with_agent(input_text, session_id)
         
         # return handler_input.response_builder.speak(response_text).response
         return (
@@ -113,7 +128,7 @@ class FallbackIntentHandler(AbstractRequestHandler):
             logging.info(f"AI-Response: {speech_text}")
             return handler_input.response_builder.speak(speech_text).response
         input_text = input_text.replace(" ", "")
-        response_text = asyncio.run(chat_with_agent(input_text, session_id))
+        response_text = chat_with_agent(input_text, session_id)
         return (
             handler_input.response_builder.speak(response_text)
             .add_directive(directive)
@@ -153,7 +168,7 @@ sb.add_request_handler(SessionEndedRequestHandler())
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # ブループリントを登録
-app.register_blueprint(switchbot_bp)
+# app.register_blueprint(switchbot_bp)
 
 @app.route(route="http_trigger")
 def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
@@ -192,7 +207,7 @@ def warmup(req: func.HttpRequest) -> func.HttpResponse:
         # スマートスピーカーエージェントの初期化
         if smart_speaker_agent is None:
             logging.info('AzFunc: スマートスピーカーエージェントを初期化中...')
-            smart_speaker_agent = create_smart_speaker_agent(llm_provider)
+            smart_speaker_agent = SmartSpeakerAgent(llm_provider)
             logging.info('AzFunc: スマートスピーカーエージェント初期化完了')
         
         response_data = {
